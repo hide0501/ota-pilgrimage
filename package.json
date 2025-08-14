@@ -1,0 +1,6 @@
+{
+  "name": "ota-pilgrimage-day1",
+  "private": true,
+  "version": "0.1.0",
+  "engines": { "node": ">=18" }
+}
