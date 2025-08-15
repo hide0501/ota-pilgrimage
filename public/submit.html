@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>体験を投稿 | Ota Pilgrimage</title>
+  <style>
+    :root{--primary:#1D4ED8;--text:#0F172A;--bg:#F8FAFC;--muted:#64748B;}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter, Noto Sans JP, system-ui, sans-serif;background:var(--bg);color:var(--text)}
+    .wrap{max-width:720px;margin:20px auto;padding:0 16px}
+    .card{background:#fff;border-radius:16px;box-shadow:0 6px 18px rgba(2,6,23,.06);padding:16px 16px 20px}
+    h1{margin:8px 0 12px;font-size:22px}
+    label{display:block;font-size:13px;color:var(--muted);margin:10px 0 6px}
+    input, textarea{width:100%;padding:12px;border:1px solid #E5E7EB;border-radius:12px;font-size:16px}
+    textarea{min-height:140px;resize:vertical}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 16px;border:none;border-radius:12px;background:var(--primary);color:#fff;font-weight:600;cursor:pointer}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .muted{color:var(--muted);font-size:12px}
+    .thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+    .thumbs img{width:96px;height:96px;object-fit:cover;border-radius:10px;border:1px solid #E5E7EB}
+    #map{width:100%;height:280px;border-radius:12px;border:1px solid #E5E7EB}
+    .topnav{display:flex;justify-content:space-between;align-items:center;margin:12px 0}
+    a{color:var(--primary);text-decoration:none}
+    .error{color:#B91C1C;font-size:12px}
+    .check{display:flex;gap:8px;align-items:flex-start;margin-top:8px}
+    .progress{height:8px;background:#E5E7EB;border-radius:999px;overflow:hidden;margin:8px 0;display:none}
+    .progress>div{height:100%;width:0;background:linear-gradient(90deg,#60A5FA,#1D4ED8)}
+  </style>
+  <!-- Firebase（compat）-->
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-storage-compat.js"></script>
+  <!-- 未ログインなら /auth.html に飛ばす -->
+  <script defer src="/auth-guard.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topnav">
+      <a href="/">← ホーム</a>
+      <div class="muted">ログイン中でない場合、ログインページに移動します</div>
+    </div>
+    <div class="card">
+      <h1>体験を投稿</h1>
+      <form id="form">
+        <label>作品名（例：『○○』）</label>
+        <input id="workTitle" required placeholder="作品名"/>
+        <div class="row">
+          <div>
+            <label>訪問日</label>
+            <input id="visitedAt" type="date" required/>
+          </div>
+          <div>
+            <label>エリア（仮：大田区固定）</label>
+            <input id="ward" value="大田区" disabled/>
+          </div>
+        </div>
+        <label>写真（最大5枚・各10MBまで）</label>
+        <input id="photos" type="file" accept="image/*" multiple/>
+        <div class="muted">※アップロード時に最長辺1600pxにリサイズし、EXIFを削除してWebPに変換します。</div>
+        <div class="thumbs" id="thumbs"></div>
+        <label>地図（ピンをドラッグ or クリック）</label>
+        <div id="map"></div>
+        <div class="row">
+          <div>
+            <label>緯度</label>
+            <input id="lat" placeholder="35.561" required/>
+          </div>
+          <div>
+            <label>経度</label>
+            <input id="lng" placeholder="139.716" required/>
+          </div>
+        </div>
+        <label>本文（140〜500字）</label>
+        <textarea id="body" maxlength="700" placeholder="現地での体験や注意点、見どころなどを共有してください。" required></textarea>
+        <div class="muted" id="count">0 文字</div>
+        <div class="check">
+          <input id="agree" type="checkbox"/> <label for="agree">ガイドラインに同意します（人物の写り込みや著作権に配慮した写真のみ投稿）</label>
+        </div>
+        <div class="progress" id="bar"><div></div></div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button id="submitBtn" class="btn" type="submit">送信する</button>
+          <button id="cancelBtn" class="btn" type="button" style="background:#64748B" onclick="history.back()">やめる</button>
+        </div>
+        <div id="error" class="error"></div>
+        <div class="muted" id="status"></div>
+      </form>
+    </div>
+  </div>
+
+<script>
+const $ = (id)=>document.getElementById(id);
+const state = { cfg:null, map:null, marker:null, working:false };
+
+function setError(msg){ $('error').textContent = msg || ''; }
+function setStatus(msg){ $('status').textContent = msg || ''; }
+function setProgress(p){ const bar=$('bar'); const inner=bar.firstElementChild; bar.style.display=(p>=0&&p<100)?'block':'none'; inner.style.width=p+'%'; }
+
+async function loadConfig(){
+  const res = await fetch('/api/config', {cache:'no-store'});
+  if(!res.ok) throw new Error('設定取得に失敗');
+  return await res.json();
+}
+
+// 画像をWebPへ（最長辺1600px、EXIF除去）
+async function fileToWebP(file){
+  if(!file.type.startsWith('image/')) throw new Error('画像ではありません');
+  if(file.size > 10*1024*1024) throw new Error('10MBを超えています');
+  const url = URL.createObjectURL(file);
+  const img = await new Promise((res, rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=rej; i.src=url; });
+  const maxSide = 1600;
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+  const canvas = document.createElement('canvas'); canvas.width=w; canvas.height=h;
+  canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+  const blob = await new Promise(res=> canvas.toBlob(res, 'image/webp', 0.9));
+  URL.revokeObjectURL(url);
+  return new File([blob], (crypto.randomUUID?.()||Date.now())+'.webp', {type:'image/webp'});
+}
+
+function preview(files){
+  const box=$('thumbs'); box.innerHTML='';
+  [...files].slice(0,5).forEach(f=>{
+    const u=URL.createObjectURL(f); const i=new Image(); i.width=96; i.height=96; i.src=u; i.onload=()=>URL.revokeObjectURL(u); box.appendChild(i);
+  });
+}
+
+async function init(){
+  state.cfg = await loadConfig();
+  if (!firebase.apps.length){
+    firebase.initializeApp({
+      apiKey: state.cfg.FIREBASE_API_KEY,
+      authDomain: state.cfg.FIREBASE_AUTH_DOMAIN,
+      projectId: state.cfg.FIREBASE_PROJECT_ID,
+      storageBucket: state.cfg.FIREBASE_STORAGE_BUCKET,
+      appId: state.cfg.FIREBASE_APP_ID
+    });
+  }
+  $('body').addEventListener('input', e=> $('count').textContent = e.target.value.length + ' 文字');
+  $('photos').addEventListener('change', e=> preview(e.target.files));
+  await loadMap();
+}
+
+async function loadMap(){
+  const key = state.cfg.MAPS_API_KEY;
+  if(!key){ setError('MAPS_API_KEYが未設定です（NetlifyのEnvironment variablesに追加して再デプロイ）'); return; }
+  await new Promise((resolve, reject)=>{
+    const s=document.createElement('script'); s.src=`https://maps.googleapis.com/maps/api/js?key=${key}`; s.onload=resolve; s.onerror=()=>reject(new Error('Mapsの読み込みに失敗')); document.head.appendChild(s);
+  });
+  const ota = { lat: 35.561, lng: 139.716 };
+  const map = new google.maps.Map($('map'), { center: ota, zoom: 13 });
+  const marker = new google.maps.Marker({ position: ota, map, draggable: true });
+  state.map = map; state.marker = marker; $('lat').value = ota.lat; $('lng').value = ota.lng;
+  map.addListener('click', e=>{ marker.setPosition(e.latLng); $('lat').value=e.latLng.lat().toFixed(6); $('lng').value=e.latLng.lng().toFixed(6); });
+  marker.addListener('dragend', ()=>{ const p=marker.getPosition(); $('lat').value=p.lat().toFixed(6); $('lng').value=p.lng().toFixed(6); });
+}
+
+async function onSubmit(e){
+  e.preventDefault(); setError(''); setStatus('');
+  if(state.working) return; state.working=true; $('submitBtn').disabled=true;
+  const auth = firebase.auth(); const user = auth.currentUser;
+  if(!user){ setError('ログインが必要です'); state.working=false; $('submitBtn').disabled=false; return; }
+
+  const title=$('workTitle').value.trim(); const body=$('body').value.trim();
+  if(!title) return setError('作品名を入力してください');
+  if(body.length<140 || body.length>500) return setError('本文は140〜500字です');
+  if(!$('agree').checked) return setError('ガイドラインに同意してください');
+
+  const lat=parseFloat($('lat').value), lng=parseFloat($('lng').value);
+  if(Number.isNaN(lat)||Number.isNaN(lng)) return setError('緯度・経度が不正です');
+
+  const files=[...$('photos').files].slice(0,5);
+  if(files.length===0) return setError('写真を少なくとも1枚選択してください');
+
+  setProgress(5); setStatus('画像を最適化しています…');
+  const processed=[];
+  for(let i=0;i<files.length;i++){ processed.push(await fileToWebP(files[i])); setProgress(5+Math.round((i+1)/files.length*30)); }
+
+  setStatus('画像をアップロードしています…');
+  const st=firebase.storage(); const db=firebase.firestore();
+  const postId=(crypto.randomUUID?.()||String(Date.now())); const base=`user-uploads/${user.uid}/${postId}`;
+  const urls=[];
+  for(let i=0;i<processed.length;i++){
+    const ref=st.ref().child(`${base}/${processed[i].name}`);
+    await ref.put(processed[i],{contentType:processed[i].type});
+    urls.push({ path:`${base}/${processed[i].name}`, url: await ref.getDownloadURL() });
+    setProgress(40+Math.round((i+1)/processed.length*40));
+  }
+
+  setStatus('投稿を作成しています…');
+  await db.collection('posts').doc(postId).set({
+    authorUid:user.uid, authorEmail:user.email||null,
+    workTitle:title, visitedAt:$('visitedAt').value||null, ward:'大田区',
+    location:new firebase.firestore.GeoPoint(lat,lng),
+    body, images:urls, status:'pending',
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+
+  setProgress(100); setStatus('送信完了。承認後に公開されます。');
+  setTimeout(()=>location.href='/', 1200);
+  state.working=false; $('submitBtn').disabled=false;
+}
+
+document.getElementById('form').addEventListener('submit', onSubmit);
+init().catch(err=> setError('初期化エラー: '+ err.message));
+</script>
+</body>
+</html>

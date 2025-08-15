@@ -1,4 +1,5 @@
 import type { Handler } from "@netlify/functions";
+
 export const handler: Handler = async () => {
   const {
     FIREBASE_API_KEY,
@@ -8,15 +9,13 @@ export const handler: Handler = async () => {
     FIREBASE_APP_ID,
     FIREBASE_MEASUREMENT_ID,
     APP_CHECK_SITE_KEY,
-    APPCHECK_DEBUG
+    APPCHECK_DEBUG,
+    MAPS_API_KEY
   } = process.env;
 
   return {
     statusCode: 200,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store"
-    },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
     body: JSON.stringify({
       FIREBASE_API_KEY,
       FIREBASE_AUTH_DOMAIN,
@@ -25,7 +24,8 @@ export const handler: Handler = async () => {
       FIREBASE_APP_ID,
       FIREBASE_MEASUREMENT_ID,
       APP_CHECK_SITE_KEY,
-      APPCHECK_DEBUG
+      APPCHECK_DEBUG,
+      MAPS_API_KEY
     })
   };
 };
